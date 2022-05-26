@@ -14,7 +14,7 @@ type Checkpointer interface {
 	// If it did, it blocks until all other functions that call it are finished and performs a checkpoint
 	// It is intended to be used like this:
 	//
-	// 	var c = sqlite.CheckPointer(db, 1000)
+	// 	var c = sqlite.NewCheckPointer(db, 1000)
 	// 	func() {
 	// 		defer c.Checkpoint()()
 	// 		db.Exec(`insert into "table" values ("value")`)
