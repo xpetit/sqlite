@@ -9,31 +9,49 @@ import (
 // Checkpointer is an SQLite WAL checkpointer, it is workaround before WAL2 becomes common:
 // https://www.sqlite.org/cgi/src/doc/wal2/doc/wal2.md
 // Currently, concurrent writes in SQLite make the WAL file grow without limit
-type Checkpointer struct {
-	m     sync.Mutex
-	wg    sync.WaitGroup
-	DB    *sql.DB
-	Limit int
-	i     int
+type Checkpointer interface {
+	// Checkpoint checks if the number of times it has been called reaches the limit
+	// If it did, it blocks until all other functions that call it are finished and performs a checkpoint
+	// It is intended to be used like this:
+	//
+	// 	var c = sqlite.CheckPointer(db, 1000)
+	// 	func() {
+	// 		defer c.Checkpoint()()
+	// 		db.Exec(`insert into "table" values ("value")`)
+	// 	}
+	Checkpoint() func()
 }
 
-// Checkpoint checks if the number of times it has been called reaches the limit
-// If it did, it blocks until all other functions that call it are finished and performs a checkpoint
-// It is intended to be used like this:
-//
-// 	var c = sqlite.NewCheckPointer(1000, db)
-// 	func() {
-// 		defer c.Checkpoint()()
-// 		db.Exec(`insert into "table" values ("value")`)
-// 	}
-func (c *Checkpointer) Checkpoint() func() {
+var _ Checkpointer = (*checkpointer)(nil)
+
+type checkpointer struct {
+	m     sync.Mutex
+	wg    sync.WaitGroup
+	db    *sql.DB
+	limit uint
+	i     uint
+}
+
+func NewCheckPointer(db *sql.DB, limit uint) (Checkpointer, error) {
+	if _, err := db.Exec(`pragma wal_autocheckpoint = 0`); err != nil {
+		return nil, err
+	}
+
+	return &checkpointer{
+		db:    db,
+		limit: limit,
+	}, nil
+}
+
+func (c *checkpointer) Checkpoint() func() {
 	c.m.Lock()
-	c.i++
-	if c.i == c.Limit {
+	if c.i < c.limit {
+		c.i++
+	} else {
 		c.i = 0
 		c.wg.Wait()
 		var failed bool
-		if err := c.DB.QueryRow(`pragma wal_checkpoint(restart)`).Scan(&failed, new(int), new(int)); err != nil {
+		if err := c.db.QueryRow(`pragma wal_checkpoint(restart)`).Scan(&failed, new(uint), new(uint)); err != nil {
 			log.Println("checkpointing:", err)
 		} else if failed {
 			log.Println("checkpointing failed")
